@@ -58,6 +58,7 @@ export class ClaudeCodeAgent implements AgentProvider {
 
     const args = [
       '--print',
+      '--verbose',
       '--output-format', 'stream-json',
       '--model', this.config.model,
       '--mcp-config', mcpConfigPath,
