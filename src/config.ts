@@ -13,11 +13,19 @@ export interface ClaudeCodeConfig {
   cwd: string;
 }
 
+export interface EvaluatorConfig {
+  enabled: boolean;
+  model: string;
+  apiKey?: string;
+}
+
 export interface ImagentConfig {
   platform: string;
   agent: string;
   feishu: FeishuConfig;
   claudeCode: ClaudeCodeConfig;
+  evaluator: EvaluatorConfig;
+  maxConcurrency: number;
   logLevel: LogLevel;
 }
 
@@ -29,13 +37,18 @@ const DEFAULTS: ImagentConfig = {
     appSecret: '',
   },
   claudeCode: {
-    model: 'claude-sonnet-4-20250514',
+    model: 'Claude-Sonnet-4.6',
     maxTurns: 30,
     systemPrompt:
       'You are a helpful AI assistant in an IM group chat. ' +
       'Use the feishu MCP tools to send messages when needed. Be concise and helpful.',
     cwd: process.cwd(),
   },
+  evaluator: {
+    enabled: true,
+    model: 'Claude-Sonnet-4.6',
+  },
+  maxConcurrency: 10,
   logLevel: 'info',
 };
 
@@ -52,6 +65,7 @@ export function loadConfig(configPath: string, cliOpts: Record<string, string>):
 
   const feishuFile = (fileConfig.feishu ?? {}) as Record<string, string>;
   const claudeFile = (fileConfig.claudeCode ?? {}) as Record<string, string>;
+  const evaluatorFile = (fileConfig.evaluator ?? {}) as Record<string, unknown>;
 
   const config: ImagentConfig = {
     platform: (cliOpts.platform ?? fileConfig.platform ?? DEFAULTS.platform) as string,
@@ -67,6 +81,16 @@ export function loadConfig(configPath: string, cliOpts: Record<string, string>):
       systemPrompt: (claudeFile.systemPrompt ?? DEFAULTS.claudeCode.systemPrompt) as string,
       cwd: (claudeFile.cwd ?? DEFAULTS.claudeCode.cwd) as string,
     },
+    evaluator: {
+      enabled: process.env.IMAGENT_EVALUATOR_ENABLED !== undefined
+        ? process.env.IMAGENT_EVALUATOR_ENABLED === 'true'
+        : (evaluatorFile.enabled as boolean ?? DEFAULTS.evaluator.enabled),
+      model: (process.env.IMAGENT_EVALUATOR_MODEL ?? evaluatorFile.model ?? DEFAULTS.evaluator.model) as string,
+      apiKey: (process.env.ANTHROPIC_API_KEY ?? evaluatorFile.apiKey) as string | undefined,
+    },
+    maxConcurrency: Number(
+      process.env.IMAGENT_MAX_CONCURRENCY ?? fileConfig.maxConcurrency ?? DEFAULTS.maxConcurrency,
+    ),
     logLevel: (process.env.IMAGENT_LOG_LEVEL ?? cliOpts.logLevel ?? fileConfig.logLevel ?? DEFAULTS.logLevel) as LogLevel,
   };
 

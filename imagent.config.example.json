@@ -6,10 +6,15 @@
     "appSecret": "your-feishu-app-secret"
   },
   "claudeCode": {
-    "model": "claude-sonnet-4-20250514",
+    "model": "Claude-Sonnet-4.6",
     "maxTurns": 30,
     "systemPrompt": "You are a helpful AI assistant in a Feishu group chat. Be concise and helpful.",
     "cwd": "."
   },
+  "evaluator": {
+    "enabled": true,
+    "model": "Claude-Sonnet-4.6"
+  },
+  "maxConcurrency": 10,
   "logLevel": "info"
 }
