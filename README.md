@@ -4,13 +4,15 @@ Bridge IM platforms to AI agent tools.
 
 Currently supports:
 - **IM Platform**: Feishu (飞书/Lark) via WebSocket long connection
-- **AI Agent**: Claude Code via Agent SDK with MCP tools
+- **AI Agent**: Claude Code via CLI with MCP tools
 
 ## Architecture
 
 ```
 Feishu WebSocket → FeishuPlatform (parse events) → Bridge (route + session)
-  → ClaudeCodeAgent (query with MCP) → response → FeishuPlatform (send message)
+  → ClaudeCodeAgent (spawn claude CLI with MCP config)
+    ↕ (stdio MCP)
+  MCP Server (feishu-server.ts) → Feishu API → response via MCP or stdout
 ```
 
 - Messages in groups are processed when the bot is @mentioned

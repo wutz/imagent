@@ -16,7 +16,7 @@ export class Bridge {
 
   constructor(private config: ImagentConfig) {
     this.platform = this.createPlatform();
-    this.agent = this.createAgent(this.platform);
+    this.agent = this.createAgent();
     this.sessions = new SessionManager(config.maxConcurrency);
 
     if (config.evaluator.enabled) {
@@ -132,10 +132,10 @@ export class Bridge {
     }
   }
 
-  private createAgent(platform: IMPlatform): AgentProvider {
+  private createAgent(): AgentProvider {
     switch (this.config.agent) {
       case 'claude-code':
-        return new ClaudeCodeAgent(this.config.claudeCode, platform);
+        return new ClaudeCodeAgent(this.config.claudeCode, this.config.feishu);
       default:
         throw new Error(`Unknown agent: ${this.config.agent}`);
     }

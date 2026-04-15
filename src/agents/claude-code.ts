@@ -1,34 +1,50 @@
-import { query } from '@anthropic-ai/claude-code';
-import { execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { writeFileSync, unlinkSync, mkdtempSync, readdirSync, rmdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { AgentProvider } from './agent.js';
-import type { IMPlatform } from '../platforms/platform.js';
 import type { Session, ChatContext, AgentResponse } from '../types.js';
-import type { ClaudeCodeConfig } from '../config.js';
-import { createFeishuMcpServer } from '../mcp/feishu-tools.js';
+import type { ClaudeCodeConfig, FeishuConfig } from '../config.js';
 import { logger } from '../logger.js';
 
-function findClaudeExecutable(): string | undefined {
-  try {
-    const path = execSync('which claude', { encoding: 'utf-8' }).trim();
-    if (path) {
-      logger.debug(`Found global claude CLI at: ${path}`);
-      return path;
-    }
-  } catch {
-    // not found
-  }
-  return undefined;
+interface StreamJsonMessage {
+  type: string;
+  subtype?: string;
+  session_id?: string;
+  result?: string;
+  [key: string]: unknown;
 }
 
 export class ClaudeCodeAgent implements AgentProvider {
   readonly id = 'claude-code';
-  private claudePath: string | undefined;
+  private tmpDir: string;
 
   constructor(
     private config: ClaudeCodeConfig,
-    private platform: IMPlatform,
+    private feishuConfig: FeishuConfig,
   ) {
-    this.claudePath = findClaudeExecutable();
+    this.tmpDir = mkdtempSync(join(tmpdir(), 'imagent-'));
+  }
+
+  private buildMcpConfig(context: ChatContext): string {
+    const mcpServerPath = join(this.config.cwd, 'dist', 'mcp', 'feishu-server.js');
+    const config = {
+      mcpServers: {
+        feishu: {
+          command: 'node',
+          args: [mcpServerPath],
+          env: {
+            FEISHU_APP_ID: this.feishuConfig.appId,
+            FEISHU_APP_SECRET: this.feishuConfig.appSecret,
+            FEISHU_CHAT_ID: context.chatId,
+          },
+        },
+      },
+    };
+
+    const configPath = join(this.tmpDir, `mcp-${context.chatId}.json`);
+    writeFileSync(configPath, JSON.stringify(config));
+    return configPath;
   }
 
   async processMessage(
@@ -36,54 +52,130 @@ export class ClaudeCodeAgent implements AgentProvider {
     session: Session,
     context: ChatContext,
   ): Promise<AgentResponse> {
-    const mcpServer = createFeishuMcpServer(this.platform, context);
+    const mcpConfigPath = this.buildMcpConfig(context);
 
     logger.debug(`Processing message in session ${session.id}, agent session: ${session.agentSessionId ?? 'new'}`);
 
-    const q = query({
-      prompt: userMessage,
-      options: {
-        model: this.config.model,
-        customSystemPrompt: this.config.systemPrompt,
-        maxTurns: this.config.maxTurns,
-        cwd: this.config.cwd,
-        permissionMode: 'bypassPermissions',
-        mcpServers: { feishu: mcpServer },
-        allowedTools: ['mcp__feishu__*'],
-        ...(this.claudePath ? { pathToClaudeCodeExecutable: this.claudePath } : {}),
-        ...(session.agentSessionId ? { resume: session.agentSessionId } : {}),
-      },
-    });
+    const args = [
+      '--print',
+      '--output-format', 'stream-json',
+      '--model', this.config.model,
+      '--mcp-config', mcpConfigPath,
+      '--strict-mcp-config',
+      '--allowedTools', 'mcp__feishu__*',
+      '--permission-mode', 'bypassPermissions',
+      '--system-prompt', this.config.systemPrompt,
+    ];
 
-    let resultText = '';
-    let sessionId = '';
-
-    try {
-      for await (const message of q) {
-        // Capture session_id from any message
-        if ('session_id' in message && message.session_id) {
-          sessionId = message.session_id;
-        }
-
-        if (message.type === 'result') {
-          if (message.subtype === 'success') {
-            resultText = message.result;
-          } else {
-            logger.warn(`Agent session ended with: ${message.subtype}`);
-            resultText = `[Agent stopped: ${message.subtype}]`;
-          }
-          sessionId = message.session_id;
-        }
-      }
-    } catch (e) {
-      logger.error('Error during Claude Code query', e);
-      throw e;
+    if (this.config.maxTurns > 0) {
+      args.push('--max-turns', String(this.config.maxTurns));
     }
 
-    return { text: resultText || '[No response]', sessionId };
+    if (session.agentSessionId) {
+      args.push('--resume', session.agentSessionId);
+    }
+
+    args.push(userMessage);
+
+    return new Promise<AgentResponse>((resolve, reject) => {
+      const claude = spawn('claude', args, {
+        cwd: this.config.cwd,
+        env: { ...process.env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let resultText = '';
+      let sessionId = '';
+
+      claude.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString();
+
+        // Parse stream-json: each line is a JSON message
+        const lines = stdout.split('\n');
+        // Keep the last (potentially incomplete) line in the buffer
+        stdout = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const msg = JSON.parse(trimmed) as StreamJsonMessage;
+
+            if (msg.session_id) {
+              sessionId = msg.session_id;
+            }
+
+            if (msg.type === 'result') {
+              if (msg.subtype === 'success') {
+                resultText = (msg.result as string) ?? '';
+              } else {
+                logger.warn(`Agent session ended with: ${msg.subtype}`);
+                resultText = `[Agent stopped: ${msg.subtype}]`;
+              }
+              if (msg.session_id) sessionId = msg.session_id;
+            }
+          } catch {
+            // Not valid JSON, skip
+          }
+        }
+      });
+
+      claude.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      claude.on('close', (code) => {
+        // Process any remaining data in buffer
+        if (stdout.trim()) {
+          try {
+            const msg = JSON.parse(stdout.trim()) as StreamJsonMessage;
+            if (msg.session_id) sessionId = msg.session_id;
+            if (msg.type === 'result') {
+              if (msg.subtype === 'success') {
+                resultText = (msg.result as string) ?? '';
+              } else {
+                resultText = `[Agent stopped: ${msg.subtype}]`;
+              }
+              if (msg.session_id) sessionId = msg.session_id;
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        if (code !== 0 && !resultText) {
+          logger.error(`Claude CLI exited with code ${code}. stderr: ${stderr}`);
+          reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
+          return;
+        }
+
+        if (stderr) {
+          logger.debug(`Claude CLI stderr: ${stderr}`);
+        }
+
+        resolve({ text: resultText || '[No response]', sessionId });
+      });
+
+      claude.on('error', (err) => {
+        logger.error('Failed to spawn Claude CLI', err);
+        reject(err);
+      });
+
+      // Close stdin since we pass prompt as argument
+      claude.stdin.end();
+    });
   }
 
   async destroy(): Promise<void> {
-    // No persistent resources to clean up
+    try {
+      for (const f of readdirSync(this.tmpDir)) {
+        unlinkSync(join(this.tmpDir, f));
+      }
+      rmdirSync(this.tmpDir);
+    } catch {
+      // Best effort cleanup
+    }
   }
 }
