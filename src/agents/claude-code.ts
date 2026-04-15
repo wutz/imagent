@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-code';
+import { execSync } from 'node:child_process';
 import type { AgentProvider } from './agent.js';
 import type { IMPlatform } from '../platforms/platform.js';
 import type { Session, ChatContext, AgentResponse } from '../types.js';
@@ -6,13 +7,29 @@ import type { ClaudeCodeConfig } from '../config.js';
 import { createFeishuMcpServer } from '../mcp/feishu-tools.js';
 import { logger } from '../logger.js';
 
+function findClaudeExecutable(): string | undefined {
+  try {
+    const path = execSync('which claude', { encoding: 'utf-8' }).trim();
+    if (path) {
+      logger.debug(`Found global claude CLI at: ${path}`);
+      return path;
+    }
+  } catch {
+    // not found
+  }
+  return undefined;
+}
+
 export class ClaudeCodeAgent implements AgentProvider {
   readonly id = 'claude-code';
+  private claudePath: string | undefined;
 
   constructor(
     private config: ClaudeCodeConfig,
     private platform: IMPlatform,
-  ) {}
+  ) {
+    this.claudePath = findClaudeExecutable();
+  }
 
   async processMessage(
     userMessage: string,
@@ -33,6 +50,7 @@ export class ClaudeCodeAgent implements AgentProvider {
         permissionMode: 'bypassPermissions',
         mcpServers: { feishu: mcpServer },
         allowedTools: ['mcp__feishu__*'],
+        ...(this.claudePath ? { pathToClaudeCodeExecutable: this.claudePath } : {}),
         ...(session.agentSessionId ? { resume: session.agentSessionId } : {}),
       },
     });
