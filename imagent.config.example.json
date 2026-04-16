@@ -16,5 +16,6 @@
     "model": "Claude-Sonnet-4.6"
   },
   "maxConcurrency": 10,
+  "conversationStorePath": ".imagent/conversations",
   "logLevel": "info"
 }

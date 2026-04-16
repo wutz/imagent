@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { LogLevel } from './logger.js';
 
 export interface FeishuConfig {
@@ -26,6 +27,7 @@ export interface ImagentConfig {
   claudeCode: ClaudeCodeConfig;
   evaluator: EvaluatorConfig;
   maxConcurrency: number;
+  conversationStorePath: string;
   logLevel: LogLevel;
 }
 
@@ -49,6 +51,7 @@ const DEFAULTS: ImagentConfig = {
     model: 'Claude-Sonnet-4.6',
   },
   maxConcurrency: 10,
+  conversationStorePath: join(process.cwd(), '.imagent', 'conversations'),
   logLevel: 'info',
 };
 
@@ -91,6 +94,9 @@ export function loadConfig(configPath: string, cliOpts: Record<string, string>):
     maxConcurrency: Number(
       process.env.IMAGENT_MAX_CONCURRENCY ?? fileConfig.maxConcurrency ?? DEFAULTS.maxConcurrency,
     ),
+    conversationStorePath: (
+      process.env.IMAGENT_CONVERSATION_STORE_PATH ?? fileConfig.conversationStorePath ?? DEFAULTS.conversationStorePath
+    ) as string,
     logLevel: (process.env.IMAGENT_LOG_LEVEL ?? cliOpts.logLevel ?? fileConfig.logLevel ?? DEFAULTS.logLevel) as LogLevel,
   };
 

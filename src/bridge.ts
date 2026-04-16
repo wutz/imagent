@@ -3,6 +3,7 @@ import type { AgentProvider } from './agents/agent.js';
 import type { ChatContext } from './types.js';
 import type { ImagentConfig } from './config.js';
 import { SessionManager } from './session-manager.js';
+import { ConversationStore } from './conversation-store.js';
 import { MessageEvaluator } from './evaluator.js';
 import { FeishuPlatform } from './platforms/feishu.js';
 import { ClaudeCodeAgent } from './agents/claude-code.js';
@@ -12,12 +13,14 @@ export class Bridge {
   private platform: IMPlatform;
   private agent: AgentProvider;
   private sessions: SessionManager;
+  private store: ConversationStore;
   private evaluator: MessageEvaluator | null = null;
 
   constructor(private config: ImagentConfig) {
+    this.store = new ConversationStore(config.conversationStorePath);
     this.platform = this.createPlatform();
     this.agent = this.createAgent();
-    this.sessions = new SessionManager(config.maxConcurrency);
+    this.sessions = new SessionManager(config.maxConcurrency, this.store);
 
     if (config.evaluator.enabled) {
       this.evaluator = new MessageEvaluator(config.evaluator);
@@ -28,6 +31,7 @@ export class Bridge {
     }
 
     logger.info(`Max concurrency: ${config.maxConcurrency}`);
+    logger.info(`Conversation store: ${config.conversationStorePath}`);
   }
 
   async start(): Promise<void> {
@@ -95,10 +99,28 @@ export class Bridge {
     }
 
     try {
-      const response = await this.agent.processMessage(text, session, context);
+      // Record user message in conversation history
+      this.store.addMessage(session.id, {
+        role: 'user',
+        text,
+        userName: context.userName,
+        timestamp: Date.now(),
+      });
 
-      // Only send response text if it wasn't already sent via MCP tools
+      // Load full conversation history to pass to agent
+      const stored = this.store.load(session.id);
+      const history = stored?.messages ?? [];
+
+      const response = await this.agent.processMessage(text, session, context, history);
+
+      // Record assistant response in conversation history
       if (response.text && response.text !== '[No response]') {
+        this.store.addMessage(session.id, {
+          role: 'assistant',
+          text: response.text,
+          timestamp: Date.now(),
+        });
+
         await this.platform.sendMessage({
           context,
           text: response.text,

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import type { AgentProvider } from './agent.js';
 import type { Session, ChatContext, AgentResponse } from '../types.js';
 import type { ClaudeCodeConfig, FeishuConfig } from '../config.js';
+import type { ConversationMessage } from '../conversation-store.js';
 import { logger } from '../logger.js';
 
 interface StreamJsonMessage {
@@ -47,10 +48,33 @@ export class ClaudeCodeAgent implements AgentProvider {
     return configPath;
   }
 
+  /**
+   * Build a context prefix from conversation history.
+   * Used when --resume is not available (e.g., after process restart)
+   * but we have persisted history to provide continuity.
+   */
+  private buildContextFromHistory(history: ConversationMessage[]): string {
+    if (history.length === 0) return '';
+
+    const lines: string[] = ['<conversation_history>'];
+    for (const msg of history) {
+      const sender = msg.role === 'user'
+        ? (msg.userName ?? 'User')
+        : 'Assistant';
+      lines.push(`[${sender}]: ${msg.text}`);
+    }
+    lines.push('</conversation_history>');
+    lines.push('');
+    lines.push('The above is the conversation history from this IM chat. Continue the conversation naturally, taking the full context into account.');
+    lines.push('');
+    return lines.join('\n');
+  }
+
   async processMessage(
     userMessage: string,
     session: Session,
     context: ChatContext,
+    conversationHistory?: ConversationMessage[],
   ): Promise<AgentResponse> {
     const mcpConfigPath = this.buildMcpConfig(context);
 
@@ -72,11 +96,20 @@ export class ClaudeCodeAgent implements AgentProvider {
       args.push('--max-turns', String(this.config.maxTurns));
     }
 
+    // Determine prompt: if we have --resume, use plain message.
+    // Otherwise, if we have conversation history, prepend it for context.
+    let prompt = userMessage;
+
     if (session.agentSessionId) {
       args.push('--resume', session.agentSessionId);
+    } else if (conversationHistory && conversationHistory.length > 0) {
+      // No resume available but we have history — inject it as context
+      logger.info(`No agent session to resume, injecting ${conversationHistory.length} messages as context`);
+      const contextPrefix = this.buildContextFromHistory(conversationHistory);
+      prompt = contextPrefix + 'New message from user:\n' + userMessage;
     }
 
-    args.push(userMessage);
+    args.push(prompt);
 
     return new Promise<AgentResponse>((resolve, reject) => {
       const claude = spawn('claude', args, {
